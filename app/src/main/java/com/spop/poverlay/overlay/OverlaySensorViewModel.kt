@@ -13,6 +13,7 @@ import com.spop.poverlay.sensor.interfaces.SensorInterface
 import com.spop.poverlay.util.smoothSensorValue
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -191,10 +192,13 @@ class OverlaySensorViewModel(
 
     private var useMph = MutableStateFlow(true)
 
-    // Session stats are accumulated at the raw sensor rate (for accurate time-weighting) by a
-    // single collector coroutine, but only published to the UI-facing StateFlows below at
-    // UiUpdatePeriod. Publishing every sample (~20+/s on a Bike+) recomposed the overlay and
-    // rebuilt its chart on nearly every frame.
+    // Session stats are accumulated at the raw sensor rate (for accurate time-weighting), but
+    // only published to the UI-facing StateFlows below every UiUpdatePeriod. Publishing every
+    // sample (~20+/s on a Bike+) recomposed the overlay and rebuilt its chart on nearly every
+    // frame. The collector and the publish ticker share this serial dispatcher, so the
+    // accumulators are never touched concurrently.
+    private val statsDispatcher = Dispatchers.Default.limitedParallelism(1)
+    private var statsDirty = false
     private var maxPowerAcc = 0f
     private var maxCadenceAcc = 0f
     private var maxResistanceAcc = 0f
@@ -202,7 +206,6 @@ class OverlaySensorViewModel(
     private var maxHeartRateAcc = 0f
     private var totalEnergyAcc = 0f // kilojoules
     private var totalDistanceAcc = 0f // miles
-    private var lastPublishTime = 0L
 
     // Max value tracking
     private val mutableMaxPower = MutableStateFlow(0f)
@@ -318,9 +321,11 @@ class OverlaySensorViewModel(
             }
         }
 
-        if (forcePublish || currentTime - lastPublishTime >= UiUpdatePeriod.inWholeMilliseconds) {
-            lastPublishTime = currentTime
+        if (forcePublish) {
+            statsDirty = false
             publishSessionStats()
+        } else {
+            statsDirty = true
         }
     }
 
@@ -538,9 +543,19 @@ class OverlaySensorViewModel(
     }
 
     private fun setupMaxTracking() {
-        // One sequential collector owns the accumulators, so no main-thread hop is needed;
-        // updateSessionStats() throttles what it publishes to the UI.
-        launch(Dispatchers.Default) {
+        // Publish pending stats on a fixed tick rather than per sample, so the last update is
+        // always flushed even if the sensor stream goes quiet right after it.
+        launch(statsDispatcher) {
+            while (true) {
+                delay(UiUpdatePeriod)
+                if (statsDirty) {
+                    statsDirty = false
+                    publishSessionStats()
+                }
+            }
+        }
+        // One sequential collector owns the accumulators, so no main-thread hop is needed.
+        launch(statsDispatcher) {
             combine(
                 sensorInterface.power,
                 sensorInterface.cadence,
