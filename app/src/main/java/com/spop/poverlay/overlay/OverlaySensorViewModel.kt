@@ -191,6 +191,19 @@ class OverlaySensorViewModel(
 
     private var useMph = MutableStateFlow(true)
 
+    // Session stats are accumulated at the raw sensor rate (for accurate time-weighting) by a
+    // single collector coroutine, but only published to the UI-facing StateFlows below at
+    // UiUpdatePeriod. Publishing every sample (~20+/s on a Bike+) recomposed the overlay and
+    // rebuilt its chart on nearly every frame.
+    private var maxPowerAcc = 0f
+    private var maxCadenceAcc = 0f
+    private var maxResistanceAcc = 0f
+    private var maxSpeedAcc = 0f
+    private var maxHeartRateAcc = 0f
+    private var totalEnergyAcc = 0f // kilojoules
+    private var totalDistanceAcc = 0f // miles
+    private var lastPublishTime = 0L
+
     // Max value tracking
     private val mutableMaxPower = MutableStateFlow(0f)
     private val mutableMaxCadence = MutableStateFlow(0f)
@@ -248,33 +261,30 @@ class OverlaySensorViewModel(
         // Check if actively moving (for accumulating averages/totals and timer)
         val isCurrentlyMoving = cadence >= 1f || speed >= 0.1f
 
-        // Update movement state for timer auto-start/pause
+        // Update movement state for timer auto-start/pause (only emits on change)
         if (mutableIsMoving.value != isCurrentlyMoving) {
             mutableIsMoving.value = isCurrentlyMoving
         }
 
+        var forcePublish = false
         if (allZero) {
             // Check if we've been at zero for longer than the timeout
             if (currentTime - lastNonZeroTime > MaxResetTimeout.inWholeMilliseconds) {
-                // Reset all max values and session totals
-                mutableMaxPower.value = 0f
-                mutableMaxCadence.value = 0f
-                mutableMaxResistance.value = 0f
-                mutableMaxSpeed.value = 0f
-                mutableMaxHeartRate.value = 0f
-                mutableTotalEnergy.value = 0f
-                mutableTotalDistance.value = 0f
-                // Reset averages
+                // Reset all max values, session totals and averages
+                maxPowerAcc = 0f
+                maxCadenceAcc = 0f
+                maxResistanceAcc = 0f
+                maxSpeedAcc = 0f
+                maxHeartRateAcc = 0f
+                totalEnergyAcc = 0f
+                totalDistanceAcc = 0f
                 totalActiveTime = 0f
                 sumSpeed = 0f
                 sumResistance = 0f
                 sumCadence = 0f
                 sumHeartRate = 0f
                 totalHeartRateTime = 0f
-                mutableAvgSpeed.value = 0f
-                mutableAvgResistance.value = 0f
-                mutableAvgCadence.value = 0f
-                mutableAvgHeartRate.value = 0f
+                forcePublish = true
                 // Signal session reset for timer
                 mutableSessionReset.value = currentTime
             }
@@ -283,19 +293,18 @@ class OverlaySensorViewModel(
             lastNonZeroTime = currentTime
 
             // Update max values (always, even when not moving)
-            if (power > mutableMaxPower.value) mutableMaxPower.value = power
-            if (cadence > mutableMaxCadence.value) mutableMaxCadence.value = cadence
-            if (resistance > mutableMaxResistance.value) mutableMaxResistance.value = resistance
-            if (speed > mutableMaxSpeed.value) mutableMaxSpeed.value = speed
-            if (heartRate > mutableMaxHeartRate.value) mutableMaxHeartRate.value = heartRate
+            if (power > maxPowerAcc) maxPowerAcc = power
+            if (cadence > maxCadenceAcc) maxCadenceAcc = cadence
+            if (resistance > maxResistanceAcc) maxResistanceAcc = resistance
+            if (speed > maxSpeedAcc) maxSpeedAcc = speed
+            if (heartRate > maxHeartRateAcc) maxHeartRateAcc = heartRate
 
             // Only accumulate totals and averages when actively moving
             if (isCurrentlyMoving) {
-                // Accumulate session totals
                 // Energy: power (watts) × time (seconds) = joules, divide by 1000 for kJ
-                mutableTotalEnergy.value += (power * deltaSeconds) / 1000f
+                totalEnergyAcc += (power * deltaSeconds) / 1000f
                 // Distance: speed (mph) × time (hours) = miles
-                mutableTotalDistance.value += speed * (deltaSeconds / 3600f)
+                totalDistanceAcc += speed * (deltaSeconds / 3600f)
 
                 // Accumulate time-weighted sums for averages
                 totalActiveTime += deltaSeconds
@@ -306,18 +315,27 @@ class OverlaySensorViewModel(
                     sumHeartRate += heartRate * deltaSeconds
                     totalHeartRateTime += deltaSeconds
                 }
-
-                // Update averages
-                if (totalActiveTime > 0f) {
-                    mutableAvgSpeed.value = sumSpeed / totalActiveTime
-                    mutableAvgResistance.value = sumResistance / totalActiveTime
-                    mutableAvgCadence.value = sumCadence / totalActiveTime
-                }
-                if (totalHeartRateTime > 0f) {
-                    mutableAvgHeartRate.value = sumHeartRate / totalHeartRateTime
-                }
             }
         }
+
+        if (forcePublish || currentTime - lastPublishTime >= UiUpdatePeriod.inWholeMilliseconds) {
+            lastPublishTime = currentTime
+            publishSessionStats()
+        }
+    }
+
+    private fun publishSessionStats() {
+        mutableMaxPower.value = maxPowerAcc
+        mutableMaxCadence.value = maxCadenceAcc
+        mutableMaxResistance.value = maxResistanceAcc
+        mutableMaxSpeed.value = maxSpeedAcc
+        mutableMaxHeartRate.value = maxHeartRateAcc
+        mutableTotalEnergy.value = totalEnergyAcc
+        mutableTotalDistance.value = totalDistanceAcc
+        mutableAvgSpeed.value = if (totalActiveTime > 0f) sumSpeed / totalActiveTime else 0f
+        mutableAvgResistance.value = if (totalActiveTime > 0f) sumResistance / totalActiveTime else 0f
+        mutableAvgCadence.value = if (totalActiveTime > 0f) sumCadence / totalActiveTime else 0f
+        mutableAvgHeartRate.value = if (totalHeartRateTime > 0f) sumHeartRate / totalHeartRateTime else 0f
     }
 
     val powerValue = sensorInterface.power
@@ -520,7 +538,9 @@ class OverlaySensorViewModel(
     }
 
     private fun setupMaxTracking() {
-        launch(Dispatchers.IO) {
+        // One sequential collector owns the accumulators, so no main-thread hop is needed;
+        // updateSessionStats() throttles what it publishes to the UI.
+        launch(Dispatchers.Default) {
             combine(
                 sensorInterface.power,
                 sensorInterface.cadence,
@@ -531,9 +551,7 @@ class OverlaySensorViewModel(
                 floatArrayOf(power, cadence, resistance, speed, heartRate)
             }.collect(object : FlowCollector<FloatArray> {
                 override suspend fun emit(value: FloatArray) {
-                    withContext(Dispatchers.Main) {
-                        updateSessionStats(value[0], value[1], value[2], value[3], value[4])
-                    }
+                    updateSessionStats(value[0], value[1], value[2], value[3], value[4])
                 }
             })
         }
