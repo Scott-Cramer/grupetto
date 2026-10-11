@@ -33,6 +33,24 @@ jobs:
         KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
         KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
       run: |
+        if [ "$GITHUB_EVENT_NAME" = "pull_request" ] && [ -z "$SIGNING_KEY" ]; then
+          # Fork PRs do not receive signing secrets. Only PR builds may use the debug key.
+          echo "::notice::No signing secrets available; building with the debug keystore"
+          mkdir -p ~/.android
+          if [ ! -f ~/.android/debug.keystore ]; then
+            keytool -genkeypair -keystore ~/.android/debug.keystore -storepass android \
+              -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 \
+              -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          fi
+          exit 0
+        fi
+        # Fail closed before building a release with missing signing credentials.
+        for secret_name in SIGNING_KEY KEY_STORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+          if [ -z "${!secret_name}" ]; then
+            echo "::error::Missing required signing secret: $secret_name"
+            exit 1
+          fi
+        done
         mkdir -p app
         echo "$SIGNING_KEY" | base64 -d > app/release.keystore
         cat <<EOF > keystore.properties

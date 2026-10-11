@@ -34,6 +34,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 
 class MainActivity : ComponentActivity() {
@@ -137,9 +138,13 @@ class MainActivity : ComponentActivity() {
             // Explicitly stop long-running components before closing the task so Android won't revive it.
             stopService(Intent(this@MainActivity, OverlayService::class.java))
             HeartRateManager.stop()
-            (application as GrupettoApplication).powerMeterManager.stop()
-            (application as GrupettoApplication).bleServer.stop()
-            (application as GrupettoApplication).antPlusServer.stop()
+            // Radio teardown makes blocking IPC calls (ANT channel release, GATT close); keep it
+            // off the main thread so a slow radio service can't trigger an ANR while quitting.
+            withContext(Dispatchers.IO) {
+                (application as GrupettoApplication).powerMeterManager.stop()
+                (application as GrupettoApplication).bleServer.stop()
+                (application as GrupettoApplication).antPlusServer.stop()
+            }
             delay(750L)
             finishAffinity()
             finishAndRemoveTask()
