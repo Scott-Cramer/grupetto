@@ -33,6 +33,19 @@ jobs:
         KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
         KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
       run: |
+        if [ -z "$SIGNING_KEY" ]; then
+          # Secrets are not exposed to pull requests from forks. Skip release signing so
+          # build.gradle falls back to the debug keystore and the PR still gets a build check.
+          # (The release job only runs on pushes, which always have the secrets.)
+          echo "::notice::No signing secrets available; building with the debug keystore"
+          mkdir -p ~/.android
+          if [ ! -f ~/.android/debug.keystore ]; then
+            keytool -genkeypair -keystore ~/.android/debug.keystore -storepass android \
+              -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 \
+              -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          fi
+          exit 0
+        fi
         mkdir -p app
         echo "$SIGNING_KEY" | base64 -d > app/release.keystore
         cat <<EOF > keystore.properties
