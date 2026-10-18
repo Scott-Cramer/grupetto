@@ -5,6 +5,7 @@ package com.spop.poverlay.overlay
 import android.app.Application
 import android.content.Intent
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.snapshots.SnapshotStateList
 import com.spop.poverlay.MainActivity
 import com.spop.poverlay.sensor.DeadSensorDetector
 import com.spop.poverlay.sensor.interfaces.DeviceType
@@ -14,6 +15,7 @@ import com.spop.poverlay.util.smoothSensorValue
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -22,10 +24,11 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.sample
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.CoroutineContext
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
@@ -259,6 +262,14 @@ class OverlaySensorViewModel(
         val deltaSeconds = (currentTime - lastUpdateTime) / 1000f
         lastUpdateTime = currentTime
 
+        // Calories follow the timer: they accumulate while it has elapsed time and restart
+        // when it is reset (the UI tick also clears them if the sensors are silent).
+        if (timerViewModel.elapsedSeconds.value > 0L) {
+            caloriesJoulesAcc += power * deltaSeconds
+        } else {
+            caloriesJoulesAcc = 0.0
+        }
+
         // Check if all values are essentially zero (for 5-minute reset)
         val allZero = power < 1f && cadence < 1f && resistance < 1f && speed < 0.1f
         // Check if actively moving (for accumulating averages/totals and timer)
@@ -343,85 +354,19 @@ class OverlaySensorViewModel(
         mutableAvgHeartRate.value = if (totalHeartRateTime > 0f) sumHeartRate / totalHeartRateTime else 0f
     }
 
-    val powerValue = sensorInterface.power
-        .sample(UiUpdatePeriod)
-        .map { "%.0f".format(it) }
-    val pelotonPowerComparison = combine(sensorInterface.nativePower, sensorInterface.usesExternalPower) { watts, external ->
-        if (external) "Peloton %.0f W".format(watts) else null
-    }
-    val rpmValue = sensorInterface.cadence
-        .sample(UiUpdatePeriod)
-        .map { "%.0f".format(it) }
+    /**
+     * Latest value of one sensor stream, written by its collector off the main thread and read
+     * by the shared UI tick. [fresh] mirrors Flow.sample(): the tick only publishes a value that
+     * arrived since the previous tick. [graph] is null for streams that are not charted.
+     */
+    private class TickedMetric(val graph: SnapshotStateList<Float>?) {
+        @Volatile var raw = 0f
+        @Volatile var smoothed = 0f
+        val fresh = AtomicBoolean(false)
 
-    val resistanceValue = sensorInterface.resistance
-        .sample(UiUpdatePeriod)
-        .map { "%.0f".format(it) }
-
-    val speedValue = combine(
-        sensorInterface.speed, useMph
-    ) { speed, isMph ->
-        val value = if (isMph) {
-            speed
-        } else {
-            speed * MphToKph
-        }
-        "%.1f".format(value)
-    }.sample(UiUpdatePeriod)
-    val speedLabel = useMph.map {
-        if (it) {
-            "mph"
-        } else {
-            "kph"
-        }
-    }
-
-    val inclineValue = sensorInterface.incline
-        .sample(UiUpdatePeriod)
-        .map { "%.1f".format(it) }
-
-    fun onClickedSpeedUnit() {
-        launch(Dispatchers.Main.immediate) {
-            useMph.emit(!useMph.value)
-        }
-    }
-
-    // Calculate calories burned by accumulating energy over time
-    // Calories (kcal) = Total Energy (Joules) / 4184 / Efficiency
-    private val accumulatedEnergy = MutableStateFlow(0.0)
-    
-    val caloriesValue = accumulatedEnergy
-        .sample(UiUpdatePeriod)
-        .map { totalJoules ->
-            val calories = totalJoules / CaloriesPerJoule / CyclingEfficiency
-            "%.0f".format(calories)
-        }
-    
-    private fun setupCaloriesAccumulation() {
-        var lastUpdateTime = System.currentTimeMillis()
-        
-        launch(Dispatchers.IO) {
-            combine(
-                sensorInterface.power,
-                timerViewModel.elapsedSeconds
-            ) { watts, seconds -> 
-                Pair(watts, seconds)
-            }.collect { (watts, elapsedSeconds) ->
-                if (elapsedSeconds > 0) {
-                    val currentTime = System.currentTimeMillis()
-                    val deltaTimeSeconds = (currentTime - lastUpdateTime) / 1000.0
-                    
-                    // Energy = Power × Time (in joules)
-                    val energyDelta = watts * deltaTimeSeconds
-                    
-                    accumulatedEnergy.value += energyDelta
-                    lastUpdateTime = currentTime
-                } else {
-                    // Timer was reset
-                    accumulatedEnergy.value = 0.0
-                    lastUpdateTime = System.currentTimeMillis()
-                }
-            }
-        }
+        // Handed from the stats dispatcher to the main thread inside withContext, which orders it.
+        var pendingGraphPoint = 0f
+        var hasPendingGraphPoint = false
     }
 
     val powerGraph = mutableStateListOf<Float>()
@@ -430,6 +375,62 @@ class OverlaySensorViewModel(
     val speedGraph = mutableStateListOf<Float>()
     val heartRateGraph = mutableStateListOf<Float>()
     val inclineGraph = mutableStateListOf<Float>()
+
+    private val powerMetric = TickedMetric(powerGraph)
+    private val nativePowerMetric = TickedMetric(null)
+    private val cadenceMetric = TickedMetric(cadenceGraph)
+    private val resistanceMetric = TickedMetric(resistanceGraph)
+    private val speedMetric = TickedMetric(speedGraph)
+    private val inclineMetric = TickedMetric(inclineGraph)
+    private val heartRateMetric = TickedMetric(heartRateGraph)
+    private val graphedMetrics = arrayOf(
+        powerMetric, cadenceMetric, resistanceMetric, speedMetric, inclineMetric, heartRateMetric
+    )
+    @Volatile private var usesExternalPower = false
+
+    private val mutablePowerValue = MutableStateFlow(SensorValuePlaceholderText)
+    val powerValue = mutablePowerValue.asStateFlow()
+
+    private val mutablePelotonPowerComparison = MutableStateFlow<String?>(null)
+    val pelotonPowerComparison = mutablePelotonPowerComparison.asStateFlow()
+
+    private val mutableRpmValue = MutableStateFlow(SensorValuePlaceholderText)
+    val rpmValue = mutableRpmValue.asStateFlow()
+
+    private val mutableResistanceValue = MutableStateFlow(SensorValuePlaceholderText)
+    val resistanceValue = mutableResistanceValue.asStateFlow()
+
+    private val mutableSpeedValue = MutableStateFlow(SensorValuePlaceholderText)
+    val speedValue = mutableSpeedValue.asStateFlow()
+    val speedLabel = useMph.map {
+        if (it) {
+            "mph"
+        } else {
+            "kph"
+        }
+    }
+
+    private val mutableInclineValue = MutableStateFlow(SensorValuePlaceholderText)
+    val inclineValue = mutableInclineValue.asStateFlow()
+
+    private fun formatSpeed(mph: Float): String =
+        "%.1f".format(if (useMph.value) mph else mph * MphToKph)
+
+    fun onClickedSpeedUnit() {
+        launch(Dispatchers.Main.immediate) {
+            useMph.emit(!useMph.value)
+            // Show the new unit right away instead of waiting for the next speed sample.
+            if (mutableSpeedValue.value != SensorValuePlaceholderText) {
+                mutableSpeedValue.value = formatSpeed(speedMetric.raw)
+            }
+        }
+    }
+
+    // Calories (kcal) = Total Energy (Joules) / 4184 / Efficiency. Energy is integrated in
+    // updateSessionStats while the timer has elapsed time, and restarts when the timer resets.
+    private var caloriesJoulesAcc = 0.0
+    private val mutableCaloriesValue = MutableStateFlow(SensorValuePlaceholderText)
+    val caloriesValue = mutableCaloriesValue.asStateFlow()
 
     fun getGraphForMetric(metric: MetricType): List<Float> {
         return when (metric) {
@@ -442,116 +443,111 @@ class OverlaySensorViewModel(
         }
     }
 
-    private fun setupGraphData() {
-        // Power graph
-        launch(Dispatchers.IO) {
-            sensorInterface.power.smoothSensorValue()
-                .sample(UiUpdatePeriod)
-                .collect(object : FlowCollector<Float> {
-                    override suspend fun emit(value: Float) {
-                        withContext(Dispatchers.Main) {
-                            powerGraph.add(value)
-                            if (powerGraph.size > GraphMaxDataPoints) {
-                                powerGraph.removeFirst()
-                            }
-                        }
+    private fun collectInto(flow: Flow<Float>, metric: TickedMetric) {
+        launch(Dispatchers.Default) {
+            if (metric.graph == null) {
+                flow.collect {
+                    metric.raw = it
+                    metric.fresh.set(true)
+                }
+            } else {
+                flow.onEach { metric.raw = it }
+                    .smoothSensorValue()
+                    .collect {
+                        metric.smoothed = it
+                        metric.fresh.set(true)
                     }
-                })
-        }
-
-        // Cadence graph
-        launch(Dispatchers.IO) {
-            sensorInterface.cadence.smoothSensorValue()
-                .sample(UiUpdatePeriod)
-                .collect(object : FlowCollector<Float> {
-                    override suspend fun emit(value: Float) {
-                        withContext(Dispatchers.Main) {
-                            cadenceGraph.add(value)
-                            if (cadenceGraph.size > GraphMaxDataPoints) {
-                                cadenceGraph.removeFirst()
-                            }
-                        }
-                    }
-                })
-        }
-
-        // Resistance graph
-        launch(Dispatchers.IO) {
-            sensorInterface.resistance.smoothSensorValue()
-                .sample(UiUpdatePeriod)
-                .collect(object : FlowCollector<Float> {
-                    override suspend fun emit(value: Float) {
-                        withContext(Dispatchers.Main) {
-                            resistanceGraph.add(value)
-                            if (resistanceGraph.size > GraphMaxDataPoints) {
-                                resistanceGraph.removeFirst()
-                            }
-                        }
-                    }
-                })
-        }
-
-        // Speed graph
-        launch(Dispatchers.IO) {
-            sensorInterface.speed.smoothSensorValue()
-                .sample(UiUpdatePeriod)
-                .collect(object : FlowCollector<Float> {
-                    override suspend fun emit(value: Float) {
-                        withContext(Dispatchers.Main) {
-                            speedGraph.add(value)
-                            if (speedGraph.size > GraphMaxDataPoints) {
-                                speedGraph.removeFirst()
-                            }
-                        }
-                    }
-                })
-        }
-
-        // Heart rate graph
-        launch(Dispatchers.IO) {
-            HeartRateManager.heartRate
-                .map { (it ?: 0).toFloat() }
-                .smoothSensorValue()
-                .sample(UiUpdatePeriod)
-                .collect(object : FlowCollector<Float> {
-                    override suspend fun emit(value: Float) {
-                        withContext(Dispatchers.Main) {
-                            heartRateGraph.add(value)
-                            if (heartRateGraph.size > GraphMaxDataPoints) {
-                                heartRateGraph.removeFirst()
-                            }
-                        }
-                    }
-                })
-        }
-
-        // Incline graph
-        launch(Dispatchers.IO) {
-            sensorInterface.incline.smoothSensorValue()
-                .sample(UiUpdatePeriod)
-                .collect(object : FlowCollector<Float> {
-                    override suspend fun emit(value: Float) {
-                        withContext(Dispatchers.Main) {
-                            inclineGraph.add(value)
-                            if (inclineGraph.size > GraphMaxDataPoints) {
-                                inclineGraph.removeFirst()
-                            }
-                        }
-                    }
-                })
+            }
         }
     }
 
-    private fun setupMaxTracking() {
-        // Publish pending stats on a fixed tick rather than per sample, so the last update is
-        // always flushed even if the sensor stream goes quiet right after it.
+    private fun setupSensorCollection() {
+        collectInto(sensorInterface.power, powerMetric)
+        collectInto(sensorInterface.nativePower, nativePowerMetric)
+        collectInto(sensorInterface.cadence, cadenceMetric)
+        collectInto(sensorInterface.resistance, resistanceMetric)
+        collectInto(sensorInterface.speed, speedMetric)
+        collectInto(sensorInterface.incline, inclineMetric)
+        collectInto(HeartRateManager.heartRate.map { (it ?: 0).toFloat() }, heartRateMetric)
+        launch(Dispatchers.Default) {
+            sensorInterface.usesExternalPower.collect { usesExternalPower = it }
+        }
+    }
+
+    /**
+     * Publishes every UI-facing value on one fixed tick. Separately sampled flows each fired on
+     * their own 500 ms clock, so the overlay recomposed and redrew about a dozen times a second;
+     * aligned, their updates land in the same frame.
+     */
+    private suspend fun publishUiTick() {
+        if (statsDirty) {
+            statsDirty = false
+            publishSessionStats()
+        }
+        if (timerViewModel.elapsedSeconds.value == 0L) {
+            caloriesJoulesAcc = 0.0
+        }
+        mutableCaloriesValue.value =
+            "%.0f".format(caloriesJoulesAcc / CaloriesPerJoule / CyclingEfficiency)
+
+        // Readouts are StateFlows, so an unchanged string doesn't recompose anything.
+        val powerFresh = powerMetric.fresh.getAndSet(false)
+        val cadenceFresh = cadenceMetric.fresh.getAndSet(false)
+        val resistanceFresh = resistanceMetric.fresh.getAndSet(false)
+        val speedFresh = speedMetric.fresh.getAndSet(false)
+        val inclineFresh = inclineMetric.fresh.getAndSet(false)
+        val heartRateFresh = heartRateMetric.fresh.getAndSet(false)
+        if (powerFresh) mutablePowerValue.value = "%.0f".format(powerMetric.raw)
+        if (cadenceFresh) mutableRpmValue.value = "%.0f".format(cadenceMetric.raw)
+        if (resistanceFresh) mutableResistanceValue.value = "%.0f".format(resistanceMetric.raw)
+        if (speedFresh) mutableSpeedValue.value = formatSpeed(speedMetric.raw)
+        if (inclineFresh) mutableInclineValue.value = "%.1f".format(inclineMetric.raw)
+        val nativePowerFresh = nativePowerMetric.fresh.getAndSet(false)
+        mutablePelotonPowerComparison.value = when {
+            !usesExternalPower -> null
+            nativePowerFresh -> "Peloton %.0f W".format(nativePowerMetric.raw)
+            else -> mutablePelotonPowerComparison.value
+        }
+
+        var anyGraphPoint = false
+        for (metric in graphedMetrics) {
+            val fresh = when (metric) {
+                powerMetric -> powerFresh
+                cadenceMetric -> cadenceFresh
+                resistanceMetric -> resistanceFresh
+                speedMetric -> speedFresh
+                inclineMetric -> inclineFresh
+                else -> heartRateFresh
+            }
+            if (fresh) {
+                metric.pendingGraphPoint = metric.smoothed
+                metric.hasPendingGraphPoint = true
+                anyGraphPoint = true
+            }
+        }
+        if (anyGraphPoint) {
+            withContext(Dispatchers.Main) {
+                for (metric in graphedMetrics) {
+                    if (!metric.hasPendingGraphPoint) continue
+                    metric.hasPendingGraphPoint = false
+                    val graph = metric.graph ?: continue
+                    graph.add(metric.pendingGraphPoint)
+                    if (graph.size > GraphMaxDataPoints) {
+                        graph.removeFirst()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun setupUiTick() {
+        // The tick shares the stats dispatcher with the collector below, so the accumulators
+        // are never touched concurrently. Publishing on a fixed tick also flushes the last
+        // update even if the sensor stream goes quiet right after it.
         launch(statsDispatcher) {
             while (true) {
                 delay(UiUpdatePeriod)
-                if (statsDirty) {
-                    statsDirty = false
-                    publishSessionStats()
-                }
+                publishUiTick()
             }
         }
         // One sequential collector owns the accumulators, so no main-thread hop is needed.
@@ -563,20 +559,15 @@ class OverlaySensorViewModel(
                 sensorInterface.speed,
                 HeartRateManager.heartRate.map { (it ?: 0).toFloat() }
             ) { power, cadence, resistance, speed, heartRate ->
-                floatArrayOf(power, cadence, resistance, speed, heartRate)
-            }.collect(object : FlowCollector<FloatArray> {
-                override suspend fun emit(value: FloatArray) {
-                    updateSessionStats(value[0], value[1], value[2], value[3], value[4])
-                }
-            })
+                updateSessionStats(power, cadence, resistance, speed, heartRate)
+            }.collect()
         }
     }
 
     // Happens last to ensure initialization order is correct
     init {
-        setupGraphData()
-        setupCaloriesAccumulation()
-        setupMaxTracking()
+        setupSensorCollection()
+        setupUiTick()
 
         // When the active device swaps (Bike->Tread), reset the chart selection if the
         // previously selected metric no longer applies to the new device. Heart rate is
