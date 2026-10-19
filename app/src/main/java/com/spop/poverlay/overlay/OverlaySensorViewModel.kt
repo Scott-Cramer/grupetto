@@ -11,10 +11,10 @@ import com.spop.poverlay.sensor.DeadSensorDetector
 import com.spop.poverlay.sensor.interfaces.DeviceType
 import com.spop.poverlay.sensor.heartrate.HeartRateManager
 import com.spop.poverlay.sensor.interfaces.SensorInterface
+import com.spop.poverlay.util.alignedTickerFlow
 import com.spop.poverlay.util.smoothSensorValue
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -92,7 +92,16 @@ class OverlaySensorViewModel(
 
     companion object {
         // The sensor does not necessarily return new value this quickly
-        val UiUpdatePeriod = 500.milliseconds
+        val UiUpdatePeriod = 250.milliseconds
+
+        // Charts append a point on every other UI tick, so GraphMaxDataPoints still spans 150 s
+        val GraphUpdatePeriod = 500.milliseconds
+        private val UiTicksPerGraphPoint: Int = run {
+            require(GraphUpdatePeriod.inWholeMilliseconds % UiUpdatePeriod.inWholeMilliseconds == 0L) {
+                "GraphUpdatePeriod must be a multiple of UiUpdatePeriod"
+            }
+            (GraphUpdatePeriod.inWholeMilliseconds / UiUpdatePeriod.inWholeMilliseconds).toInt()
+        }
 
         // Max number of points before data starts to shift
         const val GraphMaxDataPoints = 300
@@ -357,12 +366,14 @@ class OverlaySensorViewModel(
     /**
      * Latest value of one sensor stream, written by its collector off the main thread and read
      * by the shared UI tick. [fresh] mirrors Flow.sample(): the tick only publishes a value that
-     * arrived since the previous tick. [graph] is null for streams that are not charted.
+     * arrived since the previous tick. [graphFresh] does the same for the slower chart cadence.
+     * [graph] is null for streams that are not charted.
      */
     private class TickedMetric(val graph: SnapshotStateList<Float>?) {
         @Volatile var raw = 0f
         @Volatile var smoothed = 0f
         val fresh = AtomicBoolean(false)
+        val graphFresh = AtomicBoolean(false)
 
         // Handed from the stats dispatcher to the main thread inside withContext, which orders it.
         var pendingGraphPoint = 0f
@@ -456,6 +467,7 @@ class OverlaySensorViewModel(
                     .collect {
                         metric.smoothed = it
                         metric.fresh.set(true)
+                        metric.graphFresh.set(true)
                     }
             }
         }
@@ -479,7 +491,7 @@ class OverlaySensorViewModel(
      * their own 500 ms clock, so the overlay recomposed and redrew about a dozen times a second;
      * aligned, their updates land in the same frame.
      */
-    private suspend fun publishUiTick() {
+    private suspend fun publishUiTick(publishGraphs: Boolean) {
         if (statsDirty) {
             statsDirty = false
             publishSessionStats()
@@ -496,7 +508,6 @@ class OverlaySensorViewModel(
         val resistanceFresh = resistanceMetric.fresh.getAndSet(false)
         val speedFresh = speedMetric.fresh.getAndSet(false)
         val inclineFresh = inclineMetric.fresh.getAndSet(false)
-        val heartRateFresh = heartRateMetric.fresh.getAndSet(false)
         if (powerFresh) mutablePowerValue.value = "%.0f".format(powerMetric.raw)
         if (cadenceFresh) mutableRpmValue.value = "%.0f".format(cadenceMetric.raw)
         if (resistanceFresh) mutableResistanceValue.value = "%.0f".format(resistanceMetric.raw)
@@ -509,17 +520,10 @@ class OverlaySensorViewModel(
             else -> mutablePelotonPowerComparison.value
         }
 
+        if (!publishGraphs) return
         var anyGraphPoint = false
         for (metric in graphedMetrics) {
-            val fresh = when (metric) {
-                powerMetric -> powerFresh
-                cadenceMetric -> cadenceFresh
-                resistanceMetric -> resistanceFresh
-                speedMetric -> speedFresh
-                inclineMetric -> inclineFresh
-                else -> heartRateFresh
-            }
-            if (fresh) {
+            if (metric.graphFresh.getAndSet(false)) {
                 metric.pendingGraphPoint = metric.smoothed
                 metric.hasPendingGraphPoint = true
                 anyGraphPoint = true
@@ -544,10 +548,13 @@ class OverlaySensorViewModel(
         // The tick shares the stats dispatcher with the collector below, so the accumulators
         // are never touched concurrently. Publishing on a fixed tick also flushes the last
         // update even if the sensor stream goes quiet right after it.
+        // The ticker is aligned with the ride timer's, so a timer update shares a frame with one.
         launch(statsDispatcher) {
-            while (true) {
-                delay(UiUpdatePeriod)
-                publishUiTick()
+            var tick = 0
+            // Missed ticks are skipped: a burst of publishes after a stall would show nothing new.
+            alignedTickerFlow(UiUpdatePeriod, catchUp = false).collect {
+                tick = (tick + 1) % UiTicksPerGraphPoint
+                publishUiTick(publishGraphs = tick == 0)
             }
         }
         // One sequential collector owns the accumulators, so no main-thread hop is needed.
