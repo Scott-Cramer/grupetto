@@ -364,16 +364,33 @@ class OverlaySensorViewModel(
     }
 
     /**
-     * Latest value of one sensor stream, written by its collector off the main thread and read
-     * by the shared UI tick. [fresh] mirrors Flow.sample(): the tick only publishes a value that
-     * arrived since the previous tick. [graphFresh] does the same for the slower chart cadence.
-     * [graph] is null for streams that are not charted.
+     * One sensor stream, written by its collector off the main thread and read by the shared UI
+     * tick. The readout shows the mean of the samples that arrived since the previous tick, so it
+     * is as current as the latest sample without its sample-to-sample jitter; with no new samples
+     * the readout keeps its value. [graphFresh] marks a new smoothed value for the slower chart
+     * cadence. [graph] is null for streams that are not charted.
      */
     private class TickedMetric(val graph: SnapshotStateList<Float>?) {
-        @Volatile var raw = 0f
+        private var sum = 0.0
+        private var count = 0
+        /** Last value published to the readout. */
+        @Volatile var displayed = 0f
         @Volatile var smoothed = 0f
-        val fresh = AtomicBoolean(false)
         val graphFresh = AtomicBoolean(false)
+
+        fun add(value: Float) = synchronized(this) {
+            sum += value
+            count++
+        }
+
+        /** Mean of the samples since the last call, or null if none arrived. */
+        fun takeMean(): Float? = synchronized(this) {
+            if (count == 0) return null
+            val mean = (sum / count).toFloat()
+            sum = 0.0
+            count = 0
+            mean
+        }?.also { displayed = it }
 
         // Handed from the stats dispatcher to the main thread inside withContext, which orders it.
         var pendingGraphPoint = 0f
@@ -432,7 +449,7 @@ class OverlaySensorViewModel(
             useMph.emit(!useMph.value)
             // Show the new unit right away instead of waiting for the next speed sample.
             if (mutableSpeedValue.value != SensorValuePlaceholderText) {
-                mutableSpeedValue.value = formatSpeed(speedMetric.raw)
+                mutableSpeedValue.value = formatSpeed(speedMetric.displayed)
             }
         }
     }
@@ -457,16 +474,12 @@ class OverlaySensorViewModel(
     private fun collectInto(flow: Flow<Float>, metric: TickedMetric) {
         launch(Dispatchers.Default) {
             if (metric.graph == null) {
-                flow.collect {
-                    metric.raw = it
-                    metric.fresh.set(true)
-                }
+                flow.collect { metric.add(it) }
             } else {
-                flow.onEach { metric.raw = it }
+                flow.onEach { metric.add(it) }
                     .smoothSensorValue()
                     .collect {
                         metric.smoothed = it
-                        metric.fresh.set(true)
                         metric.graphFresh.set(true)
                     }
             }
@@ -503,20 +516,17 @@ class OverlaySensorViewModel(
             "%.0f".format(caloriesJoulesAcc / CaloriesPerJoule / CyclingEfficiency)
 
         // Readouts are StateFlows, so an unchanged string doesn't recompose anything.
-        val powerFresh = powerMetric.fresh.getAndSet(false)
-        val cadenceFresh = cadenceMetric.fresh.getAndSet(false)
-        val resistanceFresh = resistanceMetric.fresh.getAndSet(false)
-        val speedFresh = speedMetric.fresh.getAndSet(false)
-        val inclineFresh = inclineMetric.fresh.getAndSet(false)
-        if (powerFresh) mutablePowerValue.value = "%.0f".format(powerMetric.raw)
-        if (cadenceFresh) mutableRpmValue.value = "%.0f".format(cadenceMetric.raw)
-        if (resistanceFresh) mutableResistanceValue.value = "%.0f".format(resistanceMetric.raw)
-        if (speedFresh) mutableSpeedValue.value = formatSpeed(speedMetric.raw)
-        if (inclineFresh) mutableInclineValue.value = "%.1f".format(inclineMetric.raw)
-        val nativePowerFresh = nativePowerMetric.fresh.getAndSet(false)
+        powerMetric.takeMean()?.let { mutablePowerValue.value = "%.0f".format(it) }
+        cadenceMetric.takeMean()?.let { mutableRpmValue.value = "%.0f".format(it) }
+        resistanceMetric.takeMean()?.let { mutableResistanceValue.value = "%.0f".format(it) }
+        speedMetric.takeMean()?.let { mutableSpeedValue.value = formatSpeed(it) }
+        inclineMetric.takeMean()?.let { mutableInclineValue.value = "%.1f".format(it) }
+        // The heart rate readout comes from HeartRateManager; drain this chart-only accumulator.
+        heartRateMetric.takeMean()
+        val nativePower = nativePowerMetric.takeMean()
         mutablePelotonPowerComparison.value = when {
             !usesExternalPower -> null
-            nativePowerFresh -> "Peloton %.0f W".format(nativePowerMetric.raw)
+            nativePower != null -> "Peloton %.0f W".format(nativePower)
             else -> mutablePelotonPowerComparison.value
         }
 
