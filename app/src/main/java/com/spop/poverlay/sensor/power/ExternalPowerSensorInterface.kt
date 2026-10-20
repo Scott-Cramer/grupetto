@@ -6,7 +6,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
-/** One selected watt stream for overlay, FTMS, cycling power, and ANT+; bike motion is unchanged. */
+/** Pedal priority for transports/control; the display can compare calibrated bike watts to pedals. */
 class ExternalPowerSensorInterface(
     private val bike: SensorInterface,
     readings: StateFlow<ExternalPowerReading?>,
@@ -25,5 +25,7 @@ class ExternalPowerSensorInterface(
     override val power = combine(bike.power, externalPower) { internal, external ->
         external ?: internal
     }.shareIn(scope, SharingStarted.Lazily, replay = 1)
+    override val displayPower = combine(bike.displayPower.averagePowerBuckets(), externalPower, ::selectPowerDisplay)
+        .shareIn(scope, SharingStarted.Lazily, replay = 1)
     init { scope.launch { readings.collect { bike.bikeControl?.useExternalPower(it) } } }
 }

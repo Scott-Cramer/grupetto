@@ -79,4 +79,54 @@ class ExternalPowerSensorInterfaceTest {
         readings.value = ExternalPowerReading(210, now, "meter")
         assertEquals(ControlMode.Manual, sensor.bikeControl!!.state.first { it.mode == ControlMode.Manual }.mode)
     }
+    @Test fun correctedDisplayKeepsPedalsForBroadcastAndShowsThemAsComparison() = runBlocking {
+        val display = MutableStateFlow(PowerDisplay(195f, DisplayPowerSource.Corrected, 145f))
+        val correctedBike = object : SensorInterface by bike {
+            override val power = display.map { it.watts }
+            override val displayPower = display
+        }
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        try { withTimeout(3000) {
+            val sensor = ExternalPowerSensorInterface(correctedBike, readings, scope) { now }
+            readings.value = ExternalPowerReading(210, now, "meter")
+            val shown = sensor.displayPower.first { it.pedalWatts == 210f }
+            assertEquals(195f, shown.watts)
+            assertEquals("Corrected", shown.source.label)
+            assertEquals("Pedals 210 W", shown.comparison)
+            assertEquals(210f, sensor.power.first())
+
+            display.value = PowerDisplay(202f, DisplayPowerSource.Corrected, 150f)
+            assertEquals(202f, sensor.displayPower.first { it.watts == 202f }.watts)
+            assertEquals(210f, sensor.power.first())
+
+            // Off/unverified frames are explicitly marked Bike, so the display returns to pedals.
+            display.value = PowerDisplay(150f)
+            val fallback = sensor.displayPower.first { it.source == DisplayPowerSource.Pedals }
+            assertEquals(210f, fallback.watts)
+            assertEquals("Bike 150 W", fallback.comparison)
+        } } finally { scope.cancel() }
+    }
+
+    @Test fun correctedDisplaySurvivesPedalTimeoutAndZeroRemainsAValidComparison() = runBlocking {
+        val display = MutableStateFlow(PowerDisplay(0f, DisplayPowerSource.Corrected, 0f))
+        val correctedBike = object : SensorInterface by bike {
+            override val power = display.map { it.watts }
+            override val displayPower = display
+        }
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        try { withTimeout(3000) {
+            val sensor = ExternalPowerSensorInterface(correctedBike, readings, scope) { now }
+            readings.value = ExternalPowerReading(0, now, "meter")
+            assertEquals("Pedals 0 W", sensor.displayPower.first { it.pedalWatts != null }.comparison)
+            now += 3001
+            val noPedals = sensor.displayPower.first { it.pedalWatts == null }
+            assertEquals(DisplayPowerSource.Corrected, noPedals.source)
+            assertEquals(0f, noPedals.watts)
+            assertEquals("Bike 0 W", noPedals.comparison)
+            display.value = PowerDisplay(145f)
+            val raw = sensor.displayPower.first { it.source == DisplayPowerSource.Bike }
+            assertEquals(145f, raw.watts)
+            assertNull(raw.comparison)
+        } } finally { scope.cancel() }
+    }
 }

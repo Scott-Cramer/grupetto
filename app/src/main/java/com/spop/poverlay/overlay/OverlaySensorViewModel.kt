@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.sample
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.shareIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.CoroutineContext
@@ -343,12 +344,9 @@ class OverlaySensorViewModel(
         mutableAvgHeartRate.value = if (totalHeartRateTime > 0f) sumHeartRate / totalHeartRateTime else 0f
     }
 
-    val powerValue = sensorInterface.power
-        .sample(UiUpdatePeriod)
-        .map { "%.0f".format(it) }
-    val pelotonPowerComparison = combine(sensorInterface.nativePower, sensorInterface.usesExternalPower) { watts, external ->
-        if (external) "Peloton %.0f W".format(watts) else null
-    }
+    private val displayedPower = sensorInterface.displayPower.shareIn(this, SharingStarted.Lazily, replay = 1)
+    private val displayWatts = displayedPower.map { it.watts }
+    val powerDisplay = displayedPower.sample(UiUpdatePeriod)
     val rpmValue = sensorInterface.cadence
         .sample(UiUpdatePeriod)
         .map { "%.0f".format(it) }
@@ -401,7 +399,7 @@ class OverlaySensorViewModel(
         
         launch(Dispatchers.IO) {
             combine(
-                sensorInterface.power,
+                displayWatts,
                 timerViewModel.elapsedSeconds
             ) { watts, seconds -> 
                 Pair(watts, seconds)
@@ -445,7 +443,7 @@ class OverlaySensorViewModel(
     private fun setupGraphData() {
         // Power graph
         launch(Dispatchers.IO) {
-            sensorInterface.power.smoothSensorValue()
+            displayWatts.smoothSensorValue()
                 .sample(UiUpdatePeriod)
                 .collect(object : FlowCollector<Float> {
                     override suspend fun emit(value: Float) {
@@ -557,7 +555,7 @@ class OverlaySensorViewModel(
         // One sequential collector owns the accumulators, so no main-thread hop is needed.
         launch(statsDispatcher) {
             combine(
-                sensorInterface.power,
+                displayWatts,
                 sensorInterface.cadence,
                 sensorInterface.resistance,
                 sensorInterface.speed,

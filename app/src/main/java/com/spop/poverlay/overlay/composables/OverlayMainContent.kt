@@ -66,7 +66,8 @@ fun OverlayMainContent(
         onMetricSelected: (MetricType) -> Unit,
         onSpeedUnitClicked: () -> Unit,
         onChartClicked: () -> Unit,
-        powerComparison: String? = null
+        powerComparison: String? = null,
+        powerSourceLabel: String = if (powerComparison != null) "External" else "Power"
 ) {
     var shrinkChart by remember { mutableStateOf(false) }
 
@@ -140,7 +141,7 @@ fun OverlayMainContent(
 
     val powerCard = @Composable {
         StatCard(
-                name = if (powerComparison != null) "External" else "Power",
+                name = powerSourceLabel,
                 value = power,
                 secondaryValue = powerComparison,
                 unit = "watts",
