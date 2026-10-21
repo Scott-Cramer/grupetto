@@ -447,7 +447,11 @@ class OverlaySensorViewModel(
     fun onClickedSpeedUnit() {
         launch(Dispatchers.Main.immediate) {
             useMph.emit(!useMph.value)
-            // Show the new unit right away instead of waiting for the next speed sample.
+        }
+        // Show the new unit right away instead of waiting for the next speed sample. Written on
+        // the stats dispatcher, after any in-flight UI tick, so a tick formatted with the old unit
+        // can't overwrite it.
+        launch(statsDispatcher) {
             if (mutableSpeedValue.value != SensorValuePlaceholderText) {
                 mutableSpeedValue.value = formatSpeed(speedMetric.displayed)
             }
