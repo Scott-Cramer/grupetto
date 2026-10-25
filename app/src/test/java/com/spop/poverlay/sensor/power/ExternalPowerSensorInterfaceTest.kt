@@ -21,7 +21,7 @@ class ExternalPowerSensorInterfaceTest {
     private val readings = MutableStateFlow<ExternalPowerReading?>(null)
     private fun fixture(block: suspend (ExternalPowerSensorInterface) -> Unit) = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
-        try { withTimeout(3000) { block(ExternalPowerSensorInterface(bike, readings, scope) { now }) } }
+        try { withTimeout(6000) { block(ExternalPowerSensorInterface(bike, readings, scope) { now }) } }
         finally { scope.cancel() }
     }
     @Test fun nativeInterfaceDefaultsDoNotChangeExistingBikeBehavior() = runBlocking {
@@ -69,6 +69,7 @@ class ExternalPowerSensorInterfaceTest {
             // A newer packet arrives before the next 250 ms timer tick.
             now += 100
             readings.value = ExternalPowerReading(220, now, "meter")
+            sensor.power.first { it == 220f }
             assertEquals(listOf(true), activeStates)
             assertEquals(listOf(210f, 220f), watts)
         } finally { observers.cancel() }
@@ -79,7 +80,7 @@ class ExternalPowerSensorInterfaceTest {
         readings.value = ExternalPowerReading(210, now, "meter")
         assertEquals(ControlMode.Manual, sensor.bikeControl!!.state.first { it.mode == ControlMode.Manual }.mode)
     }
-    @Test fun correctedDisplayKeepsPedalsForBroadcastAndShowsThemAsComparison() = runBlocking {
+    @Test fun correctedDisplayAndBroadcastStayIdenticalWhilePedalsRemainTheComparison() = runBlocking {
         val display = MutableStateFlow(PowerDisplay(195f, DisplayPowerSource.Corrected, 145f))
         val correctedBike = object : SensorInterface by bike {
             override val power = display.map { it.watts }
@@ -93,11 +94,11 @@ class ExternalPowerSensorInterfaceTest {
             assertEquals(195f, shown.watts)
             assertEquals("Corrected", shown.source.label)
             assertEquals("Pedals 210 W", shown.comparison)
-            assertEquals(210f, sensor.power.first())
+            assertEquals(195f, sensor.power.first())
 
             display.value = PowerDisplay(202f, DisplayPowerSource.Corrected, 150f)
             assertEquals(202f, sensor.displayPower.first { it.watts == 202f }.watts)
-            assertEquals(210f, sensor.power.first())
+            assertEquals(202f, sensor.power.first())
 
             // Off/unverified frames are explicitly marked Bike, so the display returns to pedals.
             display.value = PowerDisplay(150f)

@@ -1,16 +1,21 @@
 # Grupetto power calibration
 
-External Sensors → **Calibrate using power pedals** opens Grupetto calibration with **Record**, **Activate** and
-**Clear** controls. Guided capture and background capture use the same paired,
+External Sensors → **Calibration** opens the table with **Record**, **Activate** and
+**Clear** controls. The main screen and notification Show actions always open this
+table. Free riding records directly here; there is no separate Free ride screen.
+**Guided capture** remains available, with **Table view** returning to free riding.
+Guided capture and table recording use the same paired,
 uncorrected bike/pedal observations. With verified calibration active, the overlay
 and console show corrected bike watts even with pedals connected. Displayed
 raw and corrected bike numbers use the same non-overlapping 900 ms average of
 actual bike packets, shared with table and capture screens. Pedal updates do not
 recount bike packets; switching correction source discards a partial mixed bucket.
-Calibration collection and transport/control readings remain unaveraged. The overlay's
+Calibration collection and ERG feedback remain unaveraged. The overlay's
 power graph and power-derived stats follow that displayed stream, and pedal watts
-appear underneath for comparison. FTMS, Cycling Power, ANT+ and ERG still prioritize
-the connected pedals. If correction is unavailable, the display falls back to pedals,
+appear underneath for comparison. BLE/DirCon FTMS and Cycling Power use the same
+selected value and integer rounding as the large overlay number, without a second
+power smoothing pass. ANT+ receives the same selected stream. ERG feedback still
+uses the connected pedals. If correction is unavailable, display and broadcast fall back to pedals,
 then bike watts. The raw BIKE number in capture remains uncorrected.
 Clearing this option does not clear the board-fit capture
 or change the sensor board. Activation is explicit and persists across restarts;
@@ -38,7 +43,7 @@ Pulsing stops during rest or missing readings. The table screen shows live raw b
 watts, corrected watts, pedal watts, cadence and resistance even while recording
 is paused. Fit messages and validation details are available under **Fit details**.
 Both calibration dialogs use wider, compact layouts with a screen-height-aware
-content limit. Capture mode tabs share the header, guided actions share a row,
+content limit. Guided actions share a row,
 and details/review can scroll while the ordinary riding controls fit together.
 The table page compares **Before calibration** and **After calibration** as mean
 absolute error in watts against the pedals, on exactly the same saved paired
@@ -52,10 +57,21 @@ readiness, with a shortcut to its controls. The rider flow does not expose the
 experimental sensor-board fit or write controls. Raw paired efforts remain saved
 for future work translating Grupetto calibration into bike-table offsets.
 
+**Save**, **Load**, and **Share** on the table screen create and restore JSON
+backups. A backup includes the current draft, the last usable activation snapshot,
+paired ride efforts, bike serial, power-meter address, service version, and baseline.
+Save uses Android's file picker; Share attaches the same backup to the Android
+share sheet. Pause capture before loading. Load validates the file and previews
+its bike, meter, and effort counts before replacing the current Grupetto tables.
+Correction remains off until Activate is selected, and normal bike identity and
+baseline verification still applies. Loading never writes the bike's own table.
+Draft and saved snapshot are stored together atomically; existing installations
+read their older separate files until the first write migrates them.
+
 The first Record imports existing saved ride efforts. After Clear, recording
 starts fresh. A different bike, meter or board baseline cannot be mixed into a
-draft. Private atomic files are `grupetto-power-draft.json` and
-`grupetto-power-active.json`.
+draft. The private atomic snapshot is `grupetto-calibration.json`; earlier separate
+draft and activation files are migrated on the next write.
 
 ## Fit and scope
 
@@ -111,12 +127,10 @@ or up, within the baseline endpoints. Each target shows approximate pedal watts
 from nearby recorded efforts, with cadence scaling and local interpolation.
 Unmeasured targets show **Learning W** until nearby data exists; these estimates
 are display guidance only and never enter the calibration fit. Rest and Skip remain
-available. Both guided and Free ride views have a direct **Table** button.
-Free ride uses the same quality checks without targets. A dedicated
+available. Guided capture has a direct **Table view** button.
+Recording from the table uses the same quality checks without targets. A dedicated
 foreground service and wake lock keep capture alive without the ride overlay;
-its notification opens the capture screen. Closing a dialog does not pause it.
-**Background ride** opens the Free ride comparison bars. **Collect in background**
-closes only the calibration dialog and leaves the ride console open while capture continues.
+its notification opens the table. Closing a dialog does not pause it.
 
 Both meters may read as low as 5 W, including easy spinning around 12–15 W.
 Zero/below-5 W readings reset the window with an explicit low-power cue. Capture,

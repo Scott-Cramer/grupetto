@@ -35,7 +35,8 @@ class CalibrationPanelTest {
         }
         compose.onNodeWithText("Start capture").performClick()
         compose.onNodeWithText("Pause capture").assertIsDisplayed()
-        compose.onNodeWithText("Collect in background").assertExists()
+        compose.onNodeWithText("Table view").assertExists()
+        compose.onNodeWithText("Free ride").assertDoesNotExist()
         val baseline = List(31) { 1000 + it * 100 }
         compose.runOnIdle {
             state.value = state.value.copy(baseline = baseline, fit = CalibrationFit(

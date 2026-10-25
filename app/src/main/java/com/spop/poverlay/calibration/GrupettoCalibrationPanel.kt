@@ -22,9 +22,10 @@ import kotlin.math.roundToInt
 
 @Composable
 fun GrupettoCalibrationPanel(state: GrupettoCalibrationUiState, onRecord: (Boolean) -> Unit,
-    onActivate: (Boolean) -> Unit, onClear: () -> Unit, onGuide: () -> Unit, onBackground: () -> Unit,
+    onActivate: (Boolean) -> Unit, onClear: () -> Unit, onGuide: () -> Unit,
     meterReady: Boolean = false, capture: CalibrationUiState = CalibrationUiState(),
-    metrics: CalibrationLiveMetrics = CalibrationLiveMetrics()) {
+    metrics: CalibrationLiveMetrics = CalibrationLiveMetrics(),
+    fileControls: @Composable () -> Unit = {}) {
     var confirmClear by remember { mutableStateOf(false) }
     var details by remember { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -45,9 +46,9 @@ fun GrupettoCalibrationPanel(state: GrupettoCalibrationUiState, onRecord: (Boole
         CaptureHoldFeedback(capture, state.recording)
         CalibrationCorrectionLegend()
         CalibrationErrorSummary(state.errors)
+        fileControls()
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onGuide, Modifier.weight(1f).heightIn(min = 48.dp)) { Text("Guided capture") }
-            OutlinedButton(onBackground, Modifier.weight(1f).heightIn(min = 48.dp)) { Text("Background ride") }
         }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(when {

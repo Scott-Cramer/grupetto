@@ -6,7 +6,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
-/** Pedal priority for transports/control; the display can compare calibrated bike watts to pedals. */
+/** Display and transports share one power stream; ERG feedback still receives raw pedal readings. */
 class ExternalPowerSensorInterface(
     private val bike: SensorInterface,
     readings: StateFlow<ExternalPowerReading?>,
@@ -22,10 +22,8 @@ class ExternalPowerSensorInterface(
         .shareIn(scope, SharingStarted.Lazily, replay = 1)
     override val nativePower = bike.nativePower
     override val usesExternalPower = externalPower.map { it != null }.distinctUntilChanged()
-    override val power = combine(bike.power, externalPower) { internal, external ->
-        external ?: internal
-    }.shareIn(scope, SharingStarted.Lazily, replay = 1)
     override val displayPower = combine(bike.displayPower.averagePowerBuckets(), externalPower, ::selectPowerDisplay)
         .shareIn(scope, SharingStarted.Lazily, replay = 1)
+    override val power = displayPower.map { it.watts }.distinctUntilChanged()
     init { scope.launch { readings.collect { bike.bikeControl?.useExternalPower(it) } } }
 }

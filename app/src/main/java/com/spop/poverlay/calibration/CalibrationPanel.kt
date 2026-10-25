@@ -30,7 +30,7 @@ private val CaptureMuted = Color(0xFF9EAEC0)
 
 @Composable
 fun CalibrationPanel(state: CalibrationUiState, onEnabled: (Boolean) -> Unit, onClear: () -> Unit,
-    onMode: (CalibrationMode) -> Unit = {}, onRest: (Boolean) -> Unit = {}, onEasier: () -> Unit = {},
+    onRest: (Boolean) -> Unit = {}, onEasier: () -> Unit = {},
     onSkip: () -> Unit = {}, onTarget: (CalibrationTarget) -> Unit = {}, onHarder: () -> Unit = {},
     onBackground: () -> Unit = {}, localCalibration: GrupettoCalibrationUiState? = null,
     onLocalReview: () -> Unit = {}, meterReady: Boolean = false, liveMetrics: CalibrationLiveMetrics? = null,
@@ -45,11 +45,6 @@ fun CalibrationPanel(state: CalibrationUiState, onEnabled: (Boolean) -> Unit, on
             }
             if (localCalibration != null) OutlinedButton(onLocalReview,
                 Modifier.padding(start = 8.dp).heightIn(min = 48.dp)) { Text("Table") }
-            if (!review) TabRow(if (state.mode == CalibrationMode.Guided) 0 else 1,
-                Modifier.padding(start = 12.dp).width(220.dp), backgroundColor = Color.Transparent) {
-                Tab(state.mode == CalibrationMode.Guided, { onMode(CalibrationMode.Guided) }, text = { Text("Guided", maxLines = 1) })
-                Tab(state.mode == CalibrationMode.FreeRide, { onMode(CalibrationMode.FreeRide) }, text = { Text("Free ride", maxLines = 1) })
-            }
             Spacer(Modifier.weight(1f))
             Text("${localCalibration?.count ?: state.sampleCount} saved", color = CaptureGreen, fontSize = 14.sp, fontWeight = FontWeight.Bold)
             TextButton({ review = !review }, Modifier.heightIn(min = 48.dp)) { Text(if (review) "Ride view" else "Review") }
@@ -166,11 +161,11 @@ fun CalibrationPanel(state: CalibrationUiState, onEnabled: (Boolean) -> Unit, on
                     OutlinedButton({ onRest(true) }, Modifier.weight(1f).heightIn(min = 48.dp),
                         enabled = state.enabled && !state.resting) { Text("Rest") }
                     OutlinedButton(onSkip, Modifier.weight(1f).heightIn(min = 48.dp), enabled = target != null) { Text("Skip") }
-                    Button(onBackground, Modifier.weight(2f).heightIn(min = 48.dp)) { Text("Collect in background") }
+                    Button(onBackground, Modifier.weight(2f).heightIn(min = 48.dp)) { Text("Table view") }
                 }
             } else {
                 CaptureChart(state.recent)
-                Button(onBackground, Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("Collect in background") }
+                Button(onBackground, Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("Table view") }
             }
             Text(if (localCalibration?.recording == true) "Recording Grupetto calibration · rest anytime" else "8-second efforts · rest anytime", color = CaptureMuted, fontSize = 12.sp)
         }

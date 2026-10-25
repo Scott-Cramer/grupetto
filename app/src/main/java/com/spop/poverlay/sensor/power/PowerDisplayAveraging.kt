@@ -37,7 +37,7 @@ internal class PowerDisplayBucket {
     }
 }
 
-/** Non-overlapping 900 ms display buckets; raw capture, broadcasts, and ERG remain unaveraged. */
+/** Non-overlapping 900 ms display/telemetry buckets; raw capture and ERG remain unaveraged. */
 internal fun Flow<PowerDisplay>.averagePowerBuckets(): Flow<PowerDisplay> = flow {
     val bucket = PowerDisplayBucket()
     val ticks = flow { while (true) { delay(900); emit(PowerBucketEvent.Tick) } }

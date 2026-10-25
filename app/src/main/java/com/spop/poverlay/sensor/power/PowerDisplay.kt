@@ -1,8 +1,16 @@
 package com.spop.poverlay.sensor.power
 
+import kotlin.math.roundToInt
+
+internal fun telemetryWatts(watts: Float): Int = if (watts.isFinite()) watts.coerceIn(0f, 32767f).roundToInt() else 0
+
+internal fun calibrationSensorLabel(active: Boolean, recording: Boolean, meterName: String?): String =
+    (if (active) "Using calibrated built-in power" else meterName ?: "Using built-in power") +
+        if (meterName != null && recording) " and calibrating built-in power" else ""
+
 enum class DisplayPowerSource(val label: String) { Bike("Power"), Pedals("Pedals"), Corrected("Corrected") }
 
-/** Display-only choice. Transport/control watts remain on SensorInterface.power. */
+/** The main overlay number and outgoing telemetry use this same selected value. */
 data class PowerDisplay(val watts: Float, val source: DisplayPowerSource = DisplayPowerSource.Bike,
     val nativeWatts: Float = watts, val pedalWatts: Float? = null) {
     val comparison: String? get() = when {

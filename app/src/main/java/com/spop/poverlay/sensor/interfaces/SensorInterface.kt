@@ -11,7 +11,7 @@ enum class DeviceType { Bike, Tread }
 interface SensorInterface {
     val bikeControl: com.spop.poverlay.control.BikeControl? get() = null
     val power: Flow<Float>
-    /** Local display may prefer calibrated bike watts while broadcasts/ERG still use pedals. */
+    /** Display and broadcasts share selected watts; ERG has separate pedal feedback. */
     val displayPower: Flow<com.spop.poverlay.sensor.power.PowerDisplay>
         get() = power.map { com.spop.poverlay.sensor.power.PowerDisplay(it) }
     /** Native watts remain available for comparison when an external meter supplies [power]. */

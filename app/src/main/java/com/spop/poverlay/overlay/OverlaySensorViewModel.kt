@@ -346,7 +346,7 @@ class OverlaySensorViewModel(
 
     private val displayedPower = sensorInterface.displayPower.shareIn(this, SharingStarted.Lazily, replay = 1)
     private val displayWatts = displayedPower.map { it.watts }
-    val powerDisplay = displayedPower.sample(UiUpdatePeriod)
+    val powerDisplay = displayedPower
     val rpmValue = sensorInterface.cadence
         .sample(UiUpdatePeriod)
         .map { "%.0f".format(it) }

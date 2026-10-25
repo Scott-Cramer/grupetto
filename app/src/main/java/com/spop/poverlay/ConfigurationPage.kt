@@ -63,9 +63,15 @@ fun ConfigurationPage(viewModel: ConfigurationViewModel) {
     val calibration by viewModel.calibrationState.collectAsStateWithLifecycle()
     val grupettoTable by viewModel.grupettoCalibrationState.collectAsStateWithLifecycle()
     val calibrationMeterReady by viewModel.calibrationMeterReady.collectAsStateWithLifecycle(initialValue = false)
-    var dialog by remember { mutableStateOf<String?>(null) }
+    var dialog by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<String?>(null) }
+    androidx.compose.runtime.LaunchedEffect(dialog) {
+        if (dialog == "grupetto-calibration") viewModel.showCalibrationTable()
+    }
     androidx.compose.runtime.LaunchedEffect(viewModel.showCalibration.value) {
-        if (viewModel.showCalibration.value) { dialog = "calibration"; viewModel.showCalibration.value = false }
+        if (viewModel.showCalibration.value) { viewModel.showCalibrationTable(); dialog = "grupetto-calibration"; viewModel.showCalibration.value = false }
+    }
+    androidx.compose.runtime.LaunchedEffect(viewModel.showGuidedCalibration.value) {
+        if (viewModel.showGuidedCalibration.value) { dialog = "calibration"; viewModel.showGuidedCalibration.value = false }
     }
     var previewShifters by remember { mutableStateOf(false) }
     var developerTaps by remember { mutableStateOf(0) }
@@ -125,10 +131,11 @@ fun ConfigurationPage(viewModel: ConfigurationViewModel) {
                     SettingsTile("External Sensors", Modifier.weight(1f).fillMaxHeight(), Color(0xFFFB7185)) {
                         SensorSummary("Heart rate", hr?.let { it.name ?: it.address } ?: "Not connected",
                             bpm?.let { "$it bpm" } ?: "—", Color(0xFFFB7185))
-                        SensorSummary("Power meter", meter?.let { it.name ?: it.address } ?: "Using built-in power",
+                        SensorSummary("Power meter", com.spop.poverlay.sensor.power.calibrationSensorLabel(
+                            grupettoTable.active, grupettoTable.recording, meter?.let { it.name ?: it.address }),
                             externalWatts?.let { "${it.watts.coerceAtLeast(0)} W" } ?: "—", Color(0xFFFBBF24))
-                        if (calibration.enabled) TextButton({ dialog = "calibration" }) {
-                            Text("Capture · ${calibration.sampleCount} saved · Show", color = Color(0xFF6EE7B7))
+                        if (viewModel.calibrationSupported) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                            OutlinedButton({ viewModel.showCalibrationTable(); dialog = "grupetto-calibration" }) { Text("Calibration") }
                         }
                         Spacer(Modifier.weight(1f))
                         TileActionButton("Pair & manage sensors", { dialog = "sensors" })
@@ -207,13 +214,14 @@ fun ConfigurationPage(viewModel: ConfigurationViewModel) {
                 bpm?.let { "$it bpm" } ?: "—", Color(0xFFFB7185))
             OutlinedButton({ dialog = "heart" }, Modifier.fillMaxWidth()) { Text("Heart-rate monitors & zones") }
             Divider(Modifier.padding(vertical = 12.dp))
-            SensorSummary("Power meter", meter?.let { it.name ?: it.address } ?: "Use an external Cycling Power sensor",
+            SensorSummary("Power meter", com.spop.poverlay.sensor.power.calibrationSensorLabel(
+                grupettoTable.active, grupettoTable.recording, meter?.let { it.name ?: it.address }),
                 externalWatts?.let { "${it.watts.coerceAtLeast(0)} W" } ?: "—", Color(0xFFFBBF24))
             OutlinedButton({ dialog = "power" }, Modifier.fillMaxWidth()) { Text("Pair & manage power meters") }
             if (viewModel.calibrationSupported) {
                 OutlinedButton({ dialog = "grupetto-calibration" }, Modifier.fillMaxWidth()) { Text("Calibrate using power pedals") }
             }
-            Text("Pedals supply broadcasts and ERG. Active calibration shows corrected bike watts locally. Changing or losing the power source stops ERG until restarted.",
+            Text("Broadcast power matches the large overlay number. Pedals supply ERG feedback. Changing or losing the ERG power source stops ERG until restarted.",
                 fontSize = 13.sp, color = Color(0xFF9EAEC0))
         }
         "power" -> PowerMeterDialog(viewModel) { dialog = null }
@@ -221,19 +229,25 @@ fun ConfigurationPage(viewModel: ConfigurationViewModel) {
             Column(Modifier.heightIn(max = com.spop.poverlay.calibration.calibrationContentHeight()).verticalScroll(androidx.compose.foundation.rememberScrollState())) {
                 com.spop.poverlay.calibration.GrupettoCalibrationPanel(grupettoTable,
                     viewModel::recordGrupettoCalibration, viewModel::activateGrupettoCalibration, viewModel::clearGrupettoCalibration,
-                    { viewModel.startGrupettoCapture(false) }, { viewModel.startGrupettoCapture(true) },
+                    viewModel::startGuidedCalibration,
                     meterReady = calibrationMeterReady, capture = calibration,
                     metrics = com.spop.poverlay.calibration.CalibrationLiveMetrics(
                         displayedPower.nativeWatts.toDouble(), externalWatts?.watts?.toDouble(), cadence.toDouble(), resistance.toDouble(),
-                        displayedPower.watts.toDouble().takeIf { displayedPower.source == DisplayPowerSource.Corrected }))
+                        displayedPower.watts.toDouble().takeIf { displayedPower.source == DisplayPowerSource.Corrected }),
+                    fileControls = {
+                        com.spop.poverlay.calibration.CalibrationFileControls(
+                            hasData = grupettoTable.count > 0 || grupettoTable.savedCount > 0,
+                            canLoad = !grupettoTable.recording && !calibration.enabled,
+                            export = viewModel::exportCalibrationBackup, load = viewModel::loadCalibrationBackup)
+                    })
             }
         }
         "calibration" -> SettingsDialog("Calibrate using power pedals", { dialog = null }, compact = true) {
             com.spop.poverlay.calibration.CalibrationPanel(calibration,
-                { if (it) viewModel.recordGrupettoCalibration(true) else viewModel.setCalibrationEnabled(false) }, viewModel::clearCalibrationCapture,
-                viewModel::setCalibrationMode, viewModel::restCalibration, viewModel::easierCalibration,
+                { if (it) viewModel.startGuidedCalibration() else viewModel.setCalibrationEnabled(false) }, viewModel::clearCalibrationCapture,
+                viewModel::restCalibration, viewModel::easierCalibration,
                 viewModel::skipCalibrationTarget, viewModel::selectCalibrationTarget,
-                viewModel::harderCalibration, { dialog = null },
+                viewModel::harderCalibration, { viewModel.showCalibrationTable(); dialog = "grupetto-calibration" },
                 localCalibration = grupettoTable, onLocalReview = { dialog = "grupetto-calibration" }, meterReady = calibrationMeterReady,
                 liveMetrics = com.spop.poverlay.calibration.CalibrationLiveMetrics(
                     displayedPower.nativeWatts.toDouble(), externalWatts?.watts?.toDouble(), cadence.toDouble(), resistance.toDouble(),
@@ -356,7 +370,7 @@ private fun SensorSummary(label: String, name: String, value: String, accent: Co
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Text(label, fontSize = 13.sp, lineHeight = 16.sp, color = Color(0xFFBAC6D3))
-            Text(name, fontSize = 11.sp, lineHeight = 14.sp, color = Color(0xFF8796A8), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(name, fontSize = 12.sp, lineHeight = 15.sp, color = Color(0xFF8796A8), maxLines = 3, overflow = TextOverflow.Ellipsis)
         }
         Text(value, color = accent, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
     }

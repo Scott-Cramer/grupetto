@@ -135,6 +135,7 @@ class ConfigurationViewModel(
     val boardCalibrationState = boardCalibration.state
     private val grupettoCalibration = (application as GrupettoApplication).grupettoCalibration
     val grupettoCalibrationState = grupettoCalibration.state
+    private fun boardSetupRunning() = boardCalibration.state.value.active || boardCalibration.state.value.busy
     val calibrationMeterReady = kotlinx.coroutines.flow.combine(powerMeters.connectedDevice, powerMeters.reading) { device, reading ->
         device != null && device.address == reading?.address &&
             com.spop.poverlay.sensor.power.freshExternalPower(reading, android.os.SystemClock.elapsedRealtime()) != null
@@ -145,28 +146,36 @@ class ConfigurationViewModel(
             com.spop.poverlay.sensor.power.freshExternalPower(reading, android.os.SystemClock.elapsedRealtime()) != null
     } == true
     fun recordGrupettoCalibration(enabled: Boolean) {
-        if (!calibration.supported || boardCalibration.state.value.active || boardCalibration.state.value.busy) return
+        calibration.setMode(com.spop.poverlay.calibration.CalibrationMode.FreeRide)
+        if (!calibration.supported || boardSetupRunning()) return
         if (enabled && !hasBluetoothPermissions()) { requestBluetoothPermissions.value = getRequiredBluetoothPermissions(); return }
         if (enabled && !hasCalibrationMeter()) return
         viewModelScope.launch {
             val saved = calibration.savedCapture()
-            if (enabled && !hasCalibrationMeter()) return@launch
+            if (boardSetupRunning() || enabled && !hasCalibrationMeter()) return@launch
             grupettoCalibration.record(enabled, saved)
             if (enabled && !calibration.state.value.enabled) setCalibrationEnabled(true)
             else if (!enabled) setCalibrationEnabled(false)
         }
     }
-    fun activateGrupettoCalibration(enabled: Boolean) = grupettoCalibration.activate(enabled)
-    fun clearGrupettoCalibration() = grupettoCalibration.clear()
-    fun startGrupettoCapture(background: Boolean) {
-        if (!calibration.supported || boardCalibration.state.value.active || boardCalibration.state.value.busy) return
-        calibration.setMode(if (background) com.spop.poverlay.calibration.CalibrationMode.FreeRide else com.spop.poverlay.calibration.CalibrationMode.Guided)
-        showCalibration.value = true
+    fun activateGrupettoCalibration(enabled: Boolean) { if (!enabled || !boardSetupRunning()) grupettoCalibration.activate(enabled) }
+    fun clearGrupettoCalibration() { if (!boardSetupRunning()) grupettoCalibration.clear() }
+    suspend fun exportCalibrationBackup() = grupettoCalibration.exportBackup()
+    internal suspend fun loadCalibrationBackup(backup: com.spop.poverlay.calibration.CalibrationBackup): com.spop.poverlay.calibration.CalibrationLoadResult {
+        check(!calibration.state.value.enabled && !boardSetupRunning()) {
+            "Pause calibration capture before loading a table."
+        }
+        return grupettoCalibration.importBackup(backup)
+    }
+    fun startGuidedCalibration() {
+        if (!calibration.supported || boardSetupRunning()) return
+        calibration.setMode(com.spop.poverlay.calibration.CalibrationMode.Guided)
+        showGuidedCalibration.value = true
         if (!hasBluetoothPermissions()) { requestBluetoothPermissions.value = getRequiredBluetoothPermissions(); return }
         if (!hasCalibrationMeter()) return
         viewModelScope.launch {
             val saved = calibration.savedCapture()
-            if (!hasCalibrationMeter()) return@launch
+            if (boardSetupRunning() || !hasCalibrationMeter()) return@launch
             grupettoCalibration.record(true, saved)
             if (!calibration.state.value.enabled) setCalibrationEnabled(true)
         }
@@ -176,6 +185,8 @@ class ConfigurationViewModel(
     fun writeBoardCalibrationPoint() = boardCalibration.writePoint()
     fun closeBoardCalibration() = boardCalibration.close()
     val showCalibration = mutableStateOf(false)
+    val showGuidedCalibration = mutableStateOf(false)
+    fun showCalibrationTable() { calibration.setMode(com.spop.poverlay.calibration.CalibrationMode.FreeRide) }
     fun setCalibrationMode(mode: com.spop.poverlay.calibration.CalibrationMode) = calibration.setMode(mode)
     fun restCalibration(resting: Boolean) = calibration.rest(resting)
     fun easierCalibration() = calibration.easier()
@@ -184,7 +195,7 @@ class ConfigurationViewModel(
     fun selectCalibrationTarget(target: com.spop.poverlay.calibration.CalibrationTarget) = calibration.selectTarget(target)
     fun setCalibrationEnabled(enabled: Boolean) {
         if (!calibration.supported) return
-        if (enabled && (boardCalibration.state.value.active || boardCalibration.state.value.busy)) return
+        if (enabled && boardSetupRunning()) return
         if (enabled) {
             if (!hasBluetoothPermissions()) {
                 requestBluetoothPermissions.value = getRequiredBluetoothPermissions()

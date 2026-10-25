@@ -22,8 +22,7 @@ class GrupettoCalibrationManager(private val context: Context) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val mutex = Mutex()
     private val preferences = context.getSharedPreferences("grupetto-power-calibration", Context.MODE_PRIVATE)
-    private val draftStore = GrupettoCalibrationStore(context.filesDir, "grupetto-power-draft.json")
-    private val activeStore = GrupettoCalibrationStore(context.filesDir, "grupetto-power-active.json")
+    private val store = CalibrationBackupStore(context.filesDir)
     private val mutableState = MutableStateFlow(GrupettoCalibrationUiState())
     val state = mutableState.asStateFlow()
     private var draft: GrupettoCalibrationProfile? = null
@@ -37,11 +36,11 @@ class GrupettoCalibrationManager(private val context: Context) {
     val isActive get() = activeProfile != null
     private val initialized = scope.async {
         try {
-            val loaded = withContext(Dispatchers.IO) { draftStore.load() to activeStore.load() }
-            savedProfile = loaded.second?.takeIf { it.table?.ready == true }
+            val loaded = withContext(Dispatchers.IO) { store.load() }
+            savedProfile = loaded.saved?.takeIf { it.table?.ready == true }
             activeProfile = savedProfile?.takeIf { preferences.getBoolean("active", false) }
             // Re-evaluate old drafts, including fits previously rejected by error comparisons.
-            draft = loaded.first?.let { profile -> profile.copy(table = withContext(Dispatchers.Default) {
+            draft = loaded.draft?.let { profile -> profile.copy(table = withContext(Dispatchers.Default) {
                 GrupettoCalibrationFitter.fit(profile.capture.baseline, profile.capture.samples,
                     activeProfile?.takeIf { it.matches(profile.capture) }?.table)
             }) }
@@ -61,7 +60,7 @@ class GrupettoCalibrationManager(private val context: Context) {
                 if (activeProfile != null) "Recording · every saved effort updates the table" else "Recording · guide or free ride"
                 else "Recording paused") }
             if (enabled) {
-                val capture = draft?.capture ?: existing?.takeIf { preferences.getLong("clearedAt", 0) == 0L }
+                val capture = draft?.capture ?: savedProfile?.capture ?: existing?.takeIf { preferences.getLong("clearedAt", 0) == 0L }
                 if (capture != null) fitAndSave(capture)
             }
         }
@@ -89,7 +88,7 @@ class GrupettoCalibrationManager(private val context: Context) {
             }
             val table = withContext(Dispatchers.Default) { GrupettoCalibrationFitter.fit(capture.baseline, capture.samples, incumbent?.table) }
             val updated = GrupettoCalibrationProfile(capture, table)
-            withContext(NonCancellable + Dispatchers.IO) { draftStore.save(updated) }
+            withContext(NonCancellable + Dispatchers.IO) { store.save(CalibrationBackup(updated, savedProfile)) }
             synchronized(activationLock) {
                 draft = updated
                 mutableState.update { it.copy(count = capture.samples.size, table = table, savedCount = compatibleSavedCount(),
@@ -137,7 +136,7 @@ class GrupettoCalibrationManager(private val context: Context) {
         fun allowed() = generation == activationGeneration && (!automatic ||
             (recordingRequested && mutableState.value.recording && activeProfile === previous))
         if (!synchronized(activationLock) { allowed() }) return@withContext
-        withContext(Dispatchers.IO) { activeStore.save(profile) }
+        withContext(Dispatchers.IO) { store.save(CalibrationBackup(draft, profile)) }
         var installed = false
         try {
             synchronized(activationLock) {
@@ -157,7 +156,7 @@ class GrupettoCalibrationManager(private val context: Context) {
         } finally {
             // Off or pause may arrive during disk I/O. Keep the previously applied snapshot on disk too.
             if (!installed) withContext(Dispatchers.IO) {
-                if (previousSaved != null) activeStore.save(previousSaved) else activeStore.clear()
+                store.save(CalibrationBackup(draft, previousSaved))
             }
         }
     }
@@ -180,11 +179,49 @@ class GrupettoCalibrationManager(private val context: Context) {
                 try {
                     withContext(Dispatchers.IO) {
                         check(preferences.edit().putBoolean("active", false).putLong("clearedAt", System.currentTimeMillis()).commit())
-                        draftStore.clear(); activeStore.clear()
+                        store.save(CalibrationBackup(null, null))
                     }
                     draft = null; savedProfile = null; activeProfile = null; recordingSince = Long.MAX_VALUE
                     mutableState.value = GrupettoCalibrationUiState(message = "Grupetto table cleared · bike unchanged")
                 } catch (_: Exception) { mutableState.update { it.copy(recording = false, active = false, message = "Could not clear saved files; correction is off") } }
+            }
+        }
+    }
+    suspend fun exportBackup(): String {
+        initialized.await()
+        return mutex.withLock {
+            val backup = CalibrationBackup(draft, savedProfile)
+            check(backup.hasData) { "Record calibration data before saving or sharing." }
+            withContext(Dispatchers.Default) { backup.encode() }
+        }
+    }
+    internal suspend fun importBackup(backup: CalibrationBackup): CalibrationLoadResult {
+        require(backup.hasData) { "This file contains no calibration data." }
+        initialized.await()
+        return mutex.withLock {
+            check(!recordingRequested && !mutableState.value.recording) { "Pause recording before loading a table." }
+            val capture = (backup.draft ?: backup.saved)!!.capture
+            val actual = verifiedBaseline?.first
+            if (actual != null && actual != capture.baseline) throw CalibrationBaselineMismatch()
+            // Finish disk and memory publication together, even if the file dialog is dismissed.
+            withContext(NonCancellable) {
+                deactivate("Loading calibration table")
+                withContext(Dispatchers.IO) {
+                    check(preferences.edit().putBoolean("active", false).commit()) { "Could not disable correction." }
+                    store.save(backup)
+                }
+                synchronized(activationLock) {
+                    ++activationGeneration
+                    draft = backup.draft
+                    savedProfile = backup.saved
+                    activeProfile = null
+                    recordingSince = Long.MAX_VALUE
+                    mutableState.value = GrupettoCalibrationUiState(count = draft?.capture?.samples?.size ?: 0,
+                        table = draft?.table, savedCount = compatibleSavedCount(),
+                        errors = calibrationErrorComparison(draft, null, savedProfile), displayTable = displayedTable(),
+                        message = "Table loaded · correction off · activate when ready")
+                }
+                CalibrationLoadResult.Loaded
             }
         }
     }

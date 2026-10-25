@@ -77,7 +77,7 @@ fun Overlay(
     onDragFinished: () -> Unit
 ) {
     val displayedPower by sensorViewModel.powerDisplay.collectAsState(initial = com.spop.poverlay.sensor.power.PowerDisplay(Float.NaN))
-    val power = if (displayedPower.watts.isFinite()) "%.0f".format(displayedPower.watts) else SensorValuePlaceholderText
+    val power = if (displayedPower.watts.isFinite()) com.spop.poverlay.sensor.power.telemetryWatts(displayedPower.watts).toString() else SensorValuePlaceholderText
     val powerComparison = displayedPower.comparison
     val powerSource = displayedPower.source.label
 
