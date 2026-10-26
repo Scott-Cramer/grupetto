@@ -13,6 +13,8 @@ import com.spop.poverlay.sensor.v1new.selectV1BikeServices
 import com.spop.poverlay.sensor.v1new.validateV1ServiceDescriptor
 import com.spop.poverlay.util.windowed
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.SharingStarted
@@ -138,21 +140,22 @@ class PelotonBikeSensorInterfaceV1New(val context: Context) : SensorInterface, C
         withTimeout(6_000) { combine(sensor.power, sensor.cadence, sensor.resistance) { _, _, _ -> Unit }.first() }
         diagnostics.record("Telemetry verified from ${candidate.component}: power, cadence, resistance")
     }
-    override val power: Flow<Float>
-        get() = combinedSensorState.flatMapLatest { it.power }
-    override val nativePower: Flow<Float>
-        get() = combinedSensorState.flatMapLatest { it.nativePower }
-    override val displayPower: Flow<com.spop.poverlay.sensor.power.PowerDisplay>
-        get() = combinedSensorState.flatMapLatest { it.displayPower }
+    override val power: Flow<Float> = combinedSensorState.flatMapLatest { it.power }.shareLatest()
+    override val nativePower: Flow<Float> = combinedSensorState.flatMapLatest { it.nativePower }.shareLatest()
+    override val displayPower: Flow<com.spop.poverlay.sensor.power.PowerDisplay> =
+        combinedSensorState.flatMapLatest { it.displayPower }.shareLatest()
 
-    override val cadence: Flow<Float>
-        get() = combinedSensorState.flatMapLatest { it.cadence }
+    override val cadence: Flow<Float> = combinedSensorState.flatMapLatest { it.cadence }
+        .shareLatest()
 
-    override val resistance: Flow<Float>
-        get() = combinedSensorState.flatMapLatest { it.resistance }
-            .windowed(ResistanceMovingAverageWindowSize, 1, true) { readings ->
-                // Resistance sensor occasionally spikes for a single reading
-                // So take the least of the last few readings
-                readings.minOf { it }
-            }
+    override val resistance: Flow<Float> = combinedSensorState.flatMapLatest { it.resistance }
+        .windowed(ResistanceMovingAverageWindowSize, 1, true) { readings ->
+            // Resistance sensor occasionally spikes for a single reading
+            // So take the least of the last few readings
+            readings.minOf { it }
+        }
+        .shareLatest()
+
+    private fun <T> Flow<T>.shareLatest() = buffer(64, BufferOverflow.DROP_OLDEST)
+        .shareIn(this@PelotonBikeSensorInterfaceV1New, SharingStarted.WhileSubscribed(), 1)
 }
