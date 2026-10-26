@@ -40,6 +40,7 @@ fun GrupettoCalibrationPanel(state: GrupettoCalibrationUiState, onRecord: (Boole
             Switch(state.active, onActivate, enabled = state.active || state.canActivate)
             Text("Activate", fontSize = 16.sp)
         }
+        CaptureErrorNotice(capture)
         if (!meterReady) Text("Connect a power meter to record", fontSize = 14.sp, lineHeight = 18.sp, color = Color(0xFFFBBF24))
         CalibrationMetrics(metrics, showCorrected = true)
         GrupettoCoverageChart(state.displayTable ?: state.table, capture, state.recording && meterReady)
@@ -62,7 +63,7 @@ fun GrupettoCalibrationPanel(state: GrupettoCalibrationUiState, onRecord: (Boole
             if (!confirmClear) TextButton({ confirmClear = true }) { Text("Clear table…") }
         }
         if (details) {
-            Text(state.message, fontSize = 14.sp, lineHeight = 18.sp)
+            if (capture.error == null) Text(state.message, fontSize = 14.sp, lineHeight = 18.sp)
             Text("Colors show the ${if (state.active) "active" else "preview"} table's correction as a percentage of raw bike watts. " +
                 "Red: bike overestimated. Blue: bike underestimated. Scale saturates at -10% / +10%.",
                 fontSize = 12.sp, lineHeight = 16.sp, color = Color(0xFF9EAEC0))

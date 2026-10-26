@@ -49,6 +49,7 @@ fun CalibrationPanel(state: CalibrationUiState, onEnabled: (Boolean) -> Unit, on
             Text("${localCalibration?.count ?: state.sampleCount} saved", color = CaptureGreen, fontSize = 14.sp, fontWeight = FontWeight.Bold)
             TextButton({ review = !review }, Modifier.heightIn(min = 48.dp)) { Text(if (review) "Ride view" else "Review") }
         }
+        CaptureErrorNotice(state)
         if (!meterReady) Text("Connect a power meter to record", color = CaptureMuted, fontSize = 14.sp)
         if (review) {
             localCalibration?.let { local ->
@@ -101,7 +102,7 @@ fun CalibrationPanel(state: CalibrationUiState, onEnabled: (Boolean) -> Unit, on
                 state.mode == CalibrationMode.Guided && target != null && !target.containsCadence(state.frame.rpm) -> "Aim for ${target.rpm} rpm"
                 else -> state.status
             }
-            Box(Modifier.fillMaxWidth().background(Color(0xFF111B27), RoundedCornerShape(14.dp)).padding(8.dp)) {
+            if (state.error == null) Box(Modifier.fillMaxWidth().background(Color(0xFF111B27), RoundedCornerShape(14.dp)).padding(8.dp)) {
                 if (state.resting && state.enabled) {
                     Column(Modifier.fillMaxWidth().heightIn(min = 80.dp), horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center) {

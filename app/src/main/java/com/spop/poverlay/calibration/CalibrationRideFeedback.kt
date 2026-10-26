@@ -1,7 +1,9 @@
 package com.spop.poverlay.calibration
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -11,6 +13,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -57,8 +61,20 @@ internal fun captureProgressColor(progress: CaptureProgress): Color = when {
     else -> Color(0xFF9EAEC0)
 }
 
+/** Show the source failure verbatim, including its recovery instruction, in either view. */
+@Composable
+internal fun CaptureErrorNotice(capture: CalibrationUiState) {
+    val error = capture.error ?: return
+    Text(error, modifier = Modifier.fillMaxWidth()
+        .background(Color(0xFF412E18), RoundedCornerShape(8.dp))
+        .semantics { liveRegion = LiveRegionMode.Polite }
+        .padding(12.dp), color = Color(0xFFFBBF24), fontSize = 16.sp,
+        lineHeight = 22.sp, fontWeight = FontWeight.Bold)
+}
+
 @Composable
 internal fun CaptureHoldFeedback(capture: CalibrationUiState, recording: Boolean) {
+    if (capture.error != null) return // The prominent notice carries the actual reason.
     val collecting = recording && capture.enabled && !capture.resting && capture.frame != null &&
         capture.pedalWatts != null && capture.progress.phase in listOf(CapturePhase.Settling, CapturePhase.Holding, CapturePhase.Saved)
     val progress = capture.progress

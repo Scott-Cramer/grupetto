@@ -17,7 +17,14 @@ data class CalibrationUiState(val enabled: Boolean = false, val sampleCount: Int
     val frame: CalibrationFrame? = null, val pedalWatts: Int? = null,
     val mode: CalibrationMode = CalibrationMode.Guided, val resting: Boolean = false,
     val targets: List<CalibrationTarget> = emptyList(), val target: CalibrationTarget? = null,
-    val recent: List<CalibrationSample> = emptyList(), val savedAt: Long = 0)
+    val recent: List<CalibrationSample> = emptyList(), val savedAt: Long = 0,
+    // Keep the actual failure separate from routine pause/progress text until capture recovers.
+    val error: String? = null)
+
+internal fun CalibrationUiState.captureFailed(message: String) =
+    copy(enabled = false, status = message, error = message)
+
+internal fun CalibrationUiState.captureIdentityVerified() = copy(error = null)
 
 class BikeCalibrationManager(
     private val context: Context,
@@ -53,7 +60,7 @@ class BikeCalibrationManager(
                     status = "Capture paused", baseline = it.baseline, recent = it.samples.takeLast(30))
             }, onFailure = {
                 storageHealthy = false
-                mutableState.value = CalibrationUiState(status = "Saved capture is unreadable. Clear it to start again.")
+                mutableState.value = CalibrationUiState().captureFailed("Saved capture is unreadable. Clear it to start again.")
             })
     }
 
@@ -119,6 +126,7 @@ class BikeCalibrationManager(
                             current.serviceVersion == version && current.baseline == baseline) {
                             "Bike, power meter or calibration changed. Clear the saved capture to start a new one."
                         }
+                        mutableState.value = mutableState.value.captureIdentityVerified()
                         capture = current
                         if (guide == null) guide = CalibrationGuide(baseline, frame.ad)
                         val cells = guide!!.cells(current.samples)
@@ -157,8 +165,8 @@ class BikeCalibrationManager(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                if (generation == token) mutableState.value = mutableState.value.copy(enabled = false,
-                    status = e.message ?: "Calibration capture stopped.")
+                if (generation == token) mutableState.value = mutableState.value.captureFailed(
+                    e.message ?: "Calibration capture stopped.")
             } finally {
                 withContext(NonCancellable + Dispatchers.IO) { runCatching { service?.close() }; binding?.close() }
                 if (generation == token) {
@@ -184,7 +192,7 @@ class BikeCalibrationManager(
                 storageHealthy = true
                 mutableState.value = CalibrationUiState(status = "Saved capture cleared. Bike calibration is unchanged.")
             } catch (e: Exception) {
-                mutableState.value = mutableState.value.copy(enabled = false, status = "Could not clear saved capture.")
+                mutableState.value = mutableState.value.captureFailed("Could not clear saved capture.")
             } finally {
                 context.stopService(android.content.Intent(context, CalibrationCaptureService::class.java))
             }
