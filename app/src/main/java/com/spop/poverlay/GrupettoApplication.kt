@@ -43,6 +43,8 @@ class GrupettoApplication : Application() {
 
     lateinit var antPlusServer: AntPlusServer
         private set
+    lateinit var rideRecorder: com.spop.poverlay.rides.RideRecorder
+        private set
     lateinit var powerMeterManager: com.spop.poverlay.sensor.power.PowerMeterManager
         private set
     private val sensorScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default)
@@ -61,6 +63,10 @@ class GrupettoApplication : Application() {
         ) else bike
         bleServer = BleServer(this, bluetoothManager, sensorInterface)
         antPlusServer = AntPlusServer(this, sensorInterface)
+        // Ride history: record every ride and upload it to ride.teamcramer.com.
+        // Emulated (developer demo) sensors record locally but never upload.
+        rideRecorder = com.spop.poverlay.rides.RideRecorder(this, sensorInterface, uploadEnabled = emulatedModel == null)
+        rideRecorder.start()
     }
 
     private fun createSensorInterface(): SensorInterface {

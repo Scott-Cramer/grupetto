@@ -3,6 +3,12 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+// Ride upload secret for ride.teamcramer.com — kept out of git in ride.properties
+// (RIDE_TOKEN=...). Builds without it still record rides; they just can't upload.
+def rideProperties = new Properties()
+def ridePropertiesFile = rootProject.file("ride.properties")
+if (ridePropertiesFile.exists()) { rideProperties.load(new FileInputStream(ridePropertiesFile)) }
+
 def keystorePropertiesFile = rootProject.file("keystore.properties")
 def keystoreProperties = new Properties()
 if (keystorePropertiesFile.exists()) {
@@ -18,7 +24,8 @@ android {
         minSdk 21
         targetSdk 34
         versionCode 46
-        versionName "v0.0.44"
+        versionName "v0.0.44-rides"
+        buildConfigField "String", "RIDE_TOKEN", "\"${rideProperties.getProperty('RIDE_TOKEN', '')}\""
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

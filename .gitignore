@@ -24,3 +24,6 @@ CLAUDE.md
 keystore.properties
 *.jks
 *.keystore
+
+# ride.teamcramer.com upload secret
+ride.properties
